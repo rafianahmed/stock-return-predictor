@@ -1,0 +1,18 @@
+import pandas as pd
+
+from stock_predictor.features import make_features
+
+
+def test_make_features_has_target_and_no_missing_after_drop():
+    idx = pd.date_range("2020-01-01", periods=260, freq="B")
+    prices = pd.DataFrame(
+        {
+            "Close": [100 + i + ((-1) ** i) * 2 for i in range(260)],
+            "Volume": [1_000_000 + i for i in range(260)],
+        },
+        index=idx,
+    )
+    features = make_features(prices)
+    assert "target_next_return" in features.columns
+    assert not features.isna().any().any()
+    assert len(features) > 0
