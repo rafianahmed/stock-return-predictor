@@ -1,0 +1,28 @@
+import pandas as pd
+
+from stock_predictor.backtest import backtest_strategy, monte_carlo_resample, performance_stats
+
+
+def test_backtest_strategy_runs():
+    idx = pd.date_range("2021-01-01", periods=50, freq="B")
+    returns = pd.Series([0.001, -0.002] * 25, index=idx)
+    preds = pd.Series([0.01, -0.01] * 25, index=idx)
+    bt = backtest_strategy(returns, preds)
+    assert "strategy_equity" in bt.columns
+    assert bt["position"].abs().max() == 1
+
+
+def test_monte_carlo_resample_runs():
+    idx = pd.date_range("2021-01-01", periods=100, freq="B")
+    strategy = pd.Series([0.001, -0.0005] * 50, index=idx)
+    buy_hold = pd.Series([0.0007, -0.0004] * 50, index=idx)
+    mc = monte_carlo_resample(strategy, buy_hold, n_sims=10, block_size=5)
+    assert len(mc) == 10
+    assert "strategy_minus_bh_return" in mc.columns
+
+
+def test_performance_stats_keys():
+    returns = pd.Series([0.001] * 30)
+    stats = performance_stats(returns)
+    assert "sharpe" in stats
+    assert "max_drawdown" in stats
