@@ -1,0 +1,19 @@
+[project]
+name = "stock-return-predictor"
+version = "0.1.0"
+description = "Time-series ML pipeline for next-day stock return prediction and Monte Carlo backtesting."
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "pandas>=2.2",
+  "scikit-learn>=1.4",
+  "matplotlib>=3.8",
+  "yfinance>=0.2.40",
+  "joblib>=1.3"
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[project.scripts]
+stock-predictor = "stock_predictor.cli:main"
