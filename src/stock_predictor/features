@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+
+def rsi(close: pd.Series, window: int = 14) -> pd.Series:
+    """Relative Strength Index using simple rolling average gains/losses."""
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(window).mean()
+    loss = (-delta.clip(upper=0)).rolling(window).mean()
+    rs = gain / loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
+
+
+def make_features(prices: pd.DataFrame) -> pd.DataFrame:
+    """Create lagged features and next-day target returns.
+
+    Target is next day's close-to-close return. Features only use information
+    available at the close of day t, avoiding look-ahead leakage.
+    """
+    df = prices.copy()
+    if "Close" not in df.columns:
+        raise ValueError("Input price data must contain a 'Close' column")
+
+    close = df["Close"]
+    ret = close.pct_change()
+
+    out = pd.DataFrame(index=df.index)
+    out["ret_1d"] = ret
+    for lag in [1, 2, 3, 5, 10]:
+        out[f"ret_lag_{lag}"] = ret.shift(lag)
+
+    for window in [5, 10, 20, 50, 100, 200]:
+        ma = close.rolling(window).mean()
+        out[f"ma_ratio_{window}"] = close / ma - 1
+
+    for window in [5, 10, 20, 60]:
+        out[f"vol_{window}"] = ret.rolling(window).std()
+
+    out["rsi_14"] = rsi(close, 14)
+    out["volume_change_5"] = df["Volume"].pct_change(5) if "Volume" in df else np.nan
+    out["target_next_return"] = ret.shift(-1)
+
+    out = out.replace([np.inf, -np.inf], np.nan).dropna()
+    return out
+
+
+def split_features_target(feature_df: pd.DataFrame):
+    X = feature_df.drop(columns=["target_next_return"])
+    y = feature_df["target_next_return"]
+    return X, y
