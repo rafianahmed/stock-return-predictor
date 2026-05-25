@@ -1,0 +1,113 @@
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import joblib
+import pandas as pd
+
+from stock_predictor.backtest import (
+    backtest_strategy,
+    monte_carlo_resample,
+    performance_stats,
+    summarize_monte_carlo,
+)
+from stock_predictor.data import DataConfig, download_prices
+from stock_predictor.features import make_features, split_features_target
+from stock_predictor.model import TrainConfig, regression_metrics, time_series_split, train_random_forest
+from stock_predictor.plotting import plot_equity_curve, plot_mc_distribution
+
+
+def run(args: argparse.Namespace) -> None:
+    reports_dir = Path(args.reports_dir)
+    models_dir = Path(args.models_dir)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    prices = download_prices(
+        DataConfig(ticker=args.ticker, start=args.start, end=args.end, cache_dir=Path(args.data_dir)),
+        use_cache=not args.no_cache,
+    )
+    features = make_features(prices)
+    X, y = split_features_target(features)
+
+    train_cfg = TrainConfig(
+        test_size=args.test_size,
+        n_estimators=args.n_estimators,
+        max_depth=args.max_depth,
+        min_samples_leaf=args.min_samples_leaf,
+        random_state=args.seed,
+    )
+    X_train, X_test, y_train, y_test = time_series_split(X, y, train_cfg.test_size)
+    model = train_random_forest(X_train, y_train, train_cfg)
+
+    preds = pd.Series(model.predict(X_test), index=X_test.index, name="prediction")
+    metrics = regression_metrics(y_test, preds.values)
+    bt = backtest_strategy(
+        actual_returns=y_test,
+        predictions=preds,
+        threshold=args.threshold,
+        transaction_cost_bps=args.transaction_cost_bps,
+    )
+
+    stats = pd.DataFrame(
+        {
+            "strategy": performance_stats(bt["strategy_return"]),
+            "buy_hold": performance_stats(bt["buy_hold_return"]),
+        }
+    )
+    mc = monte_carlo_resample(
+        bt["strategy_return"],
+        bt["buy_hold_return"],
+        n_sims=args.n_sims,
+        block_size=args.block_size,
+        seed=args.seed,
+    )
+    mc_summary = summarize_monte_carlo(mc)
+
+    pd.Series(metrics).to_csv(reports_dir / "prediction_metrics.csv")
+    stats.to_csv(reports_dir / "backtest_stats.csv")
+    bt.to_csv(reports_dir / "backtest_timeseries.csv")
+    mc.to_csv(reports_dir / "monte_carlo_samples.csv", index=False)
+    mc_summary.to_csv(reports_dir / "monte_carlo_summary.csv")
+    plot_equity_curve(bt, reports_dir / "figures" / "equity_curve.png")
+    plot_mc_distribution(mc, reports_dir / "figures" / "mc_excess_return_distribution.png")
+    joblib.dump(model, models_dir / f"{args.ticker}_random_forest.joblib")
+
+    print("Prediction metrics")
+    print(pd.Series(metrics).round(6))
+    print("\nBacktest stats")
+    print(stats.round(4))
+    print("\nMonte Carlo summary")
+    print(mc_summary.round(4))
+    print(f"\nSaved reports to {reports_dir.resolve()}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Stock return prediction and backtesting pipeline")
+    parser.add_argument("--ticker", default="SPY")
+    parser.add_argument("--start", default="2010-01-01")
+    parser.add_argument("--end", default=None)
+    parser.add_argument("--data-dir", default="data/raw")
+    parser.add_argument("--reports-dir", default="reports")
+    parser.add_argument("--models-dir", default="models")
+    parser.add_argument("--test-size", type=float, default=0.25)
+    parser.add_argument("--n-estimators", type=int, default=500)
+    parser.add_argument("--max-depth", type=int, default=6)
+    parser.add_argument("--min-samples-leaf", type=int, default=25)
+    parser.add_argument("--threshold", type=float, default=0.0)
+    parser.add_argument("--transaction-cost-bps", type=float, default=1.0)
+    parser.add_argument("--n-sims", type=int, default=2000)
+    parser.add_argument("--block-size", type=int, default=20)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--no-cache", action="store_true")
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
+    run(parser.parse_args())
+
+
+if __name__ == "__main__":
+    main()
