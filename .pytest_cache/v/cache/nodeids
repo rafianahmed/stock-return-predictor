@@ -1,0 +1,6 @@
+[
+  "tests/test_backtest.py::test_backtest_strategy_runs",
+  "tests/test_backtest.py::test_monte_carlo_resample_runs",
+  "tests/test_backtest.py::test_performance_stats_keys",
+  "tests/test_features.py::test_make_features_has_target_and_no_missing_after_drop"
+]
