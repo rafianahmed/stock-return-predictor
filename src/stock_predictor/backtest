@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+TRADING_DAYS = 252
+
+
+def make_positions(predictions: pd.Series, threshold: float = 0.0) -> pd.Series:
+    """Long when prediction > threshold, short when < -threshold, else flat."""
+    positions = pd.Series(0.0, index=predictions.index)
+    positions[predictions > threshold] = 1.0
+    positions[predictions < -threshold] = -1.0
+    return positions
+
+
+def backtest_strategy(
+    actual_returns: pd.Series,
+    predictions: pd.Series,
+    threshold: float = 0.0,
+    transaction_cost_bps: float = 1.0,
+) -> pd.DataFrame:
+    """Backtest close-to-close next-day strategy.
+
+    The prediction made at close t is applied to the t+1 return represented by
+    actual_returns at that same index in the engineered dataset.
+    """
+    actual_returns, predictions = actual_returns.align(predictions, join="inner")
+    positions = make_positions(predictions, threshold=threshold)
+    turnover = positions.diff().abs().fillna(positions.abs())
+    costs = turnover * (transaction_cost_bps / 10_000)
+
+    strategy_returns = positions * actual_returns - costs
+    buy_hold_returns = actual_returns.copy()
+
+    out = pd.DataFrame(
+        {
+            "actual_return": actual_returns,
+            "prediction": predictions,
+            "position": positions,
+            "strategy_return": strategy_returns,
+            "buy_hold_return": buy_hold_returns,
+            "strategy_equity": (1 + strategy_returns).cumprod(),
+            "buy_hold_equity": (1 + buy_hold_returns).cumprod(),
+        }
+    )
+    return out
+
+
+def performance_stats(returns: pd.Series) -> dict[str, float]:
+    returns = returns.dropna()
+    if returns.empty:
+        raise ValueError("Returns series is empty")
+    equity = (1 + returns).cumprod()
+    drawdown = equity / equity.cummax() - 1
+    vol = returns.std() * np.sqrt(TRADING_DAYS)
+    return {
+        "total_return": float(equity.iloc[-1] - 1),
+        "cagr": float(equity.iloc[-1] ** (TRADING_DAYS / len(returns)) - 1),
+        "annual_volatility": float(vol),
+        "sharpe": float((returns.mean() * TRADING_DAYS) / vol) if vol != 0 else np.nan,
+        "max_drawdown": float(drawdown.min()),
+        "hit_rate": float((returns > 0).mean()),
+    }
+
+
+def monte_carlo_resample(
+    strategy_returns: pd.Series,
+    buy_hold_returns: pd.Series,
+    n_sims: int = 2000,
+    block_size: int = 20,
+    seed: int = 42,
+) -> pd.DataFrame:
+    """Block bootstrap strategy and benchmark returns.
+
+    Resamples contiguous blocks to preserve some serial dependence, then compares
+    terminal return and Sharpe distributions instead of relying on one curve.
+    """
+    rng = np.random.default_rng(seed)
+    paired = pd.concat(
+        [strategy_returns.rename("strategy"), buy_hold_returns.rename("buy_hold")], axis=1
+    ).dropna()
+    n = len(paired)
+    if n < block_size:
+        raise ValueError("Not enough observations for requested block_size")
+
+    results = []
+    max_start = n - block_size
+    for _ in range(n_sims):
+        chunks = []
+        while sum(len(c) for c in chunks) < n:
+            start = rng.integers(0, max_start + 1)
+            chunks.append(paired.iloc[start : start + block_size])
+        sample = pd.concat(chunks).iloc[:n]
+        s_stats = performance_stats(sample["strategy"])
+        b_stats = performance_stats(sample["buy_hold"])
+        results.append(
+            {
+                "strategy_total_return": s_stats["total_return"],
+                "buy_hold_total_return": b_stats["total_return"],
+                "strategy_sharpe": s_stats["sharpe"],
+                "buy_hold_sharpe": b_stats["sharpe"],
+                "strategy_minus_bh_return": s_stats["total_return"] - b_stats["total_return"],
+                "strategy_minus_bh_sharpe": s_stats["sharpe"] - b_stats["sharpe"],
+            }
+        )
+    return pd.DataFrame(results)
+
+
+def summarize_monte_carlo(mc: pd.DataFrame) -> pd.DataFrame:
+    summary = mc.quantile([0.05, 0.25, 0.50, 0.75, 0.95]).T
+    summary.columns = ["p05", "p25", "median", "p75", "p95"]
+    summary["prob_positive"] = (mc > 0).mean()
+    return summary
